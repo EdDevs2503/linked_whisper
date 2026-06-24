@@ -12,7 +12,7 @@ from .connectors.working_nomads import WorkingNomadsConnector
 from .connectors.jobicy import JobicyConnector
 from .matcher.keyword_filter import passes_keyword_filter, keyword_score
 from .matcher.llm_matcher import llm_match
-from .storage.database import init_db, save_match, list_matches, already_matched
+from .storage.database import init_db, save_match, save_evaluation, list_matches, already_matched
 from .schema_generator.generator import generate_profile
 from . import config
 
@@ -106,6 +106,7 @@ def run(
             if skip_existing and await already_matched(job.id, job.source):
                 continue
             result = await llm_match(job, prof)
+            await save_evaluation(job.id, job.source, result.score)
             status = "MATCH" if result.match else "skip"
             typer.echo(f"  [{i}/{len(candidates)}] {status} ({result.score:.2f}) {job.title} @ {job.company}")
             if result.match and result.score >= config.LLM_MATCH_THRESHOLD:
