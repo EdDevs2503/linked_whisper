@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"\nimport json, sys, re\ndata = json.load(sys.stdin)\ncmd = data.get('tool_input', {}).get('command', '')\nif 'git commit' in cmd and re.search(r'feat[(:' + r']', cmd):\n    out = {'hookSpecificOutput': {'hookEventName': 'PostToolUse', 'additionalContext': 'REMINDER: This was a feat commit. You MUST update README.md before this session ends to document the new feature: what it does, how to use it, and what the user should expect.'}}\n    print(json.dumps(out))\n\" 2>/dev/null || true",
+            "statusMessage": "Checking if README needs update..."
+          }
+        ]
+      }
+    ]
+  }
+}
