@@ -1,8 +1,10 @@
 import asyncio
 import json
+import re
 from pathlib import Path
-from typing import Optional
 import typer
+from rich.console import Console
+from rich.table import Table
 
 from .schemas.profile import ProfileSchema
 from .connectors.remoteok import RemoteOKConnector
@@ -10,13 +12,11 @@ from .connectors.himalayas import HimalayasConnector
 from .connectors.remotive import RemotiveConnector
 from .connectors.working_nomads import WorkingNomadsConnector
 from .connectors.jobicy import JobicyConnector
-from .matcher.keyword_filter import passes_keyword_filter, keyword_score
-from .matcher.llm_matcher import llm_match
-from .storage.database import init_db, save_match, save_evaluation, list_matches, already_matched
+from .matcher.keyword_filter import keyword_score
 from .schema_generator.generator import generate_profile
 from . import config
 
-app = typer.Typer(help="LinkedWhisper — AI-powered remote job matcher")
+app = typer.Typer(help="LinkedWhisper — remote job matcher")
 
 ALL_CONNECTORS = {
     "remoteok": RemoteOKConnector,
@@ -25,6 +25,12 @@ ALL_CONNECTORS = {
     "working_nomads": WorkingNomadsConnector,
     "jobicy": JobicyConnector,
 }
+
+
+def _strip_html(text: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
 
 @app.command("generate-schema")
@@ -54,17 +60,13 @@ def run(
         ",".join(ALL_CONNECTORS.keys()),
         help="Comma-separated list of connectors to use",
     ),
-    dry_run: bool = typer.Option(False, help="Fetch and filter jobs without saving or calling LLM"),
-    skip_existing: bool = typer.Option(True, help="Skip jobs already saved in the database"),
 ):
-    """Fetch jobs from connectors and match against your profile."""
+    """Fetch jobs, filter by profile, and print matching candidates."""
 
     async def _run():
-        await init_db()
-
         profile_data = json.loads(profile.read_text(encoding="utf-8"))
         prof = ProfileSchema(**profile_data)
-        typer.echo(f"Loaded profile: {prof.name} — {prof.title}")
+        typer.echo(f"Loaded profile: {prof.name} — {prof.title}\n")
 
         selected = [c.strip() for c in connectors.split(",") if c.strip() in ALL_CONNECTORS]
         if not selected:
@@ -76,7 +78,7 @@ def run(
             connector = ALL_CONNECTORS[name]()
             typer.echo(f"Fetching from {name}...")
             try:
-                jobs = await connector.fetch_jobs()
+                jobs = await connector.fetch_jobs(prof)
                 typer.echo(f"  {len(jobs)} jobs fetched")
                 all_jobs.extend(jobs)
             except Exception as e:
@@ -84,63 +86,36 @@ def run(
 
         typer.echo(f"\nTotal jobs fetched: {len(all_jobs)}")
 
-        # Phase 1: keyword filter
-        candidates = []
-        for job in all_jobs:
-            score = keyword_score(job, prof)
-            if score >= config.KEYWORD_FILTER_THRESHOLD:
-                candidates.append(job)
+        candidates = [
+            job for job in all_jobs
+            if keyword_score(job, prof) >= config.KEYWORD_FILTER_THRESHOLD
+        ]
 
-        typer.echo(f"After keyword filter ({config.KEYWORD_FILTER_THRESHOLD}): {len(candidates)} candidates")
+        typer.echo(f"After keyword filter: {len(candidates)} candidates\n")
 
-        if dry_run:
-            typer.echo("\n[dry-run] Skipping LLM evaluation and storage.")
-            for job in candidates[:20]:
-                typer.echo(f"  [{job.source}] {job.title} @ {job.company}")
+        if not candidates:
+            typer.echo("No candidates found. Try adjusting your profile or lowering KEYWORD_FILTER_THRESHOLD.")
             return
 
-        # Phase 2: LLM matching
-        typer.echo("Running LLM evaluation...")
-        matched = []
+        console = Console()
+        table = Table(show_header=True, header_style="bold cyan", show_lines=True, expand=True)
+        table.add_column("#", style="dim", width=3, no_wrap=True)
+        table.add_column("Title & Company", min_width=30)
+        table.add_column("Summary", min_width=40)
+        table.add_column("URL", min_width=30, no_wrap=False)
+
         for i, job in enumerate(candidates, 1):
-            if skip_existing and await already_matched(job.id, job.source):
-                continue
-            result = await llm_match(job, prof)
-            await save_evaluation(job.id, job.source, result.score)
-            status = "MATCH" if result.match else "skip"
-            typer.echo(f"  [{i}/{len(candidates)}] {status} ({result.score:.2f}) {job.title} @ {job.company}")
-            if result.match and result.score >= config.LLM_MATCH_THRESHOLD:
-                await save_match(job, result.score, result.reason)
-                matched.append((job, result))
+            summary = _strip_html(job.description)[:200]
+            if len(_strip_html(job.description)) > 200:
+                summary += "…"
+            table.add_row(
+                str(i),
+                f"{job.title}\n[dim]{job.company}[/dim]",
+                summary,
+                job.url,
+            )
 
-        typer.echo(f"\nMatched and saved: {len(matched)} jobs")
-        for job, result in matched:
-            typer.echo(f"  {job.title} @ {job.company} [{result.score:.2f}] — {result.reason}")
-            typer.echo(f"    {job.url}")
-
-    asyncio.run(_run())
-
-
-@app.command("list-matches")
-def list_matches_cmd(
-    min_score: float = typer.Option(0.0, help="Minimum match score (0.0-1.0)"),
-    limit: Optional[int] = typer.Option(None, help="Max number of results to show"),
-):
-    """List saved job matches from the database."""
-
-    async def _run():
-        matches = await list_matches(min_score=min_score)
-        if limit:
-            matches = matches[:limit]
-        if not matches:
-            typer.echo("No matches found.")
-            return
-        typer.echo(f"Found {len(matches)} match(es) (score >= {min_score}):\n")
-        for m in matches:
-            typer.echo(f"[{m.score:.2f}] {m.title} @ {m.company}  ({m.source})")
-            typer.echo(f"  {m.url}")
-            typer.echo(f"  {m.reason}")
-            typer.echo()
+        console.print(table)
 
     asyncio.run(_run())
 
