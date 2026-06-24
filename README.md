@@ -1,6 +1,6 @@
 # LinkedWhisper
 
-AI-powered remote job matcher. You give it your resume; it searches multiple job boards, filters by keywords, and uses Claude to score each posting against your profile — keeping only the jobs worth reading.
+Remote job matcher. You give it your profile; it searches multiple job boards, applies a multi-layer filter, and prints a table of relevant engineering roles.
 
 ## Pipeline
 
@@ -22,42 +22,35 @@ flowchart TD
     fetch -->|"~50–200 raw jobs"| kw
 
     subgraph kw["Phase 2 · Keyword Filter"]
-        kw_check{"score ≥ threshold?\n(default 0.2)"}
+        direction TB
+        t1["Engineering title gate\n(rejects non-dev roles)"]
+        t2["Tech discriminator\n(rejects Golang, Rails, etc.\nnot in profile)"]
+        t3["Location check\n(rejects single-country\nrestrictions)"]
+        t4["Skill score ≥ 0.2\n(profile skills vs job text)"]
+        t1 --> t2 --> t3 --> t4
     end
 
-    kw_check -->|"no (~70%)"| drop1[" discarded "]
-    kw_check -->|"yes (~30%)"| dedup
+    kw -->|"candidates"| out
 
-    subgraph dedup["Phase 3 · LLM Scoring"]
-        seen{"in\njob_evaluations?"}
-        seen -->|yes| drop2[" skip\n(no API call) "]
-        seen -->|no| haiku["Claude Haiku\nscore 0–1 + reason"]
-        haiku --> ev[("save_evaluation\njob_evaluations")]
-        ev --> threshold{"score ≥ 0.6?"}
-        threshold -->|no| drop3[" discarded "]
-        threshold -->|yes| save
-    end
-
-    save[("save_match\njob_matches")]
-
-    save --> out
-
-    out(["linked-whisper list-matches\nsorted by score"])
+    out(["Rich ASCII table\ntitle · summary · URL"])
 ```
 
 ## What it does
 
 1. **Generates your profile** from a plain-text resume using Claude. Extracts skills, preferred roles, salary floor, and keywords to exclude.
-2. **Searches job boards** across five sources simultaneously: RemoteOK, Himalayas, Remotive, Working Nomads, and Jobicy.
-3. **Filters by keyword** — a fast pre-pass that drops postings that don't mention your skills or mention things you've excluded.
-4. **Scores with Claude** — every posting that passes the keyword filter is evaluated by an LLM that gives it a match score (0–1) and a one-sentence reason.
-5. **Persists matches** in a local SQLite database so you can query them later and avoid re-evaluating the same job twice.
+2. **Searches job boards** across five sources: RemoteOK, Himalayas, Remotive, Working Nomads, and Jobicy. Each connector uses your profile skills to drive API-level tag/search filtering where supported.
+3. **Filters by keyword** — a multi-layer pre-pass that drops:
+   - Titles that don't look like engineering roles (no "engineer", "developer", "architect", etc.)
+   - Titles that name a primary tech stack not in your profile (Golang, Rust, Flutter, Rails, PHP, …)
+   - Jobs with a single-country location restriction when your profile requests remote work
+   - Jobs that don't match any of your skills or preferred roles (score < 0.2)
+4. **Prints a table** — surviving candidates are printed as a rich ASCII table with title, company, description summary, and URL.
 
 ## What to expect
 
-- Typical run: 50–200 raw postings → keyword filter drops ~70% → Claude scores the rest → 5–30 matched jobs stored.
-- LLM scoring costs a few cents per run depending on how many postings clear the keyword filter.
-- Results are stored locally; nothing is sent anywhere except the Anthropic API.
+- Typical run: 100–200 raw postings → multi-layer filter drops ~85–90% → 10–20 relevant candidates printed.
+- No LLM calls during filtering — fast and free to run repeatedly.
+- `ANTHROPIC_API_KEY` is only needed for `generate-schema`.
 
 ## Setup
 
@@ -67,7 +60,7 @@ flowchart TD
 # Install dependencies
 poetry install
 
-# Copy and fill in your API key
+# Copy and fill in your API key (only needed for generate-schema)
 cp .env.example .env
 # Edit .env — set ANTHROPIC_API_KEY=sk-ant-...
 ```
@@ -79,33 +72,41 @@ cp .env.example .env
 Point it at a plain-text resume file:
 
 ```bash
-poetry run linked-whisper generate-schema resume.txt
+poetry run linked-whisper generate-schema --resume resume.txt
 # → Writes profile.json in the current directory
 ```
 
-Review `profile.json` and tweak anything before running the search. The `excluded_keywords` field is particularly important — add technologies or role types you don't want.
+Review `profile.json` and tweak before running the search:
+- **`excluded_keywords`** — add role types or tech you don't want (e.g. `"QA engineer"`, `"blockchain"`)
+- **`preferred_roles`** — the seniority/role titles you're targeting
+- **`work_type`** — include `"remote"` to enable location filtering
 
-### 2. Search and match jobs
-
-```bash
-poetry run linked-whisper search --profile profile.json
-```
-
-By default this searches all five job boards. To limit sources:
+### 2. Search and filter jobs
 
 ```bash
-poetry run linked-whisper search --profile profile.json --sources remoteok,himalayas
+poetry run linked-whisper run --profile profile.json
 ```
 
-You'll see live output as each posting is evaluated. Matches at or above the threshold (default: 0.6) are saved to the local database.
-
-### 3. List saved matches
+To limit to specific connectors:
 
 ```bash
-poetry run linked-whisper list-matches
+poetry run linked-whisper run --profile profile.json --connectors remoteok,himalayas
 ```
 
-Shows all stored matches sorted by score, with the Claude-generated reason for each.
+Output is a table printed to the terminal — copy URLs directly from it.
+
+## Keyword filter in detail
+
+The filter runs four checks in order; any failure scores the job 0 and drops it:
+
+| Check | What it rejects |
+|---|---|
+| Engineering title gate | "Office Assistant", "Sales Rep", "Content Writer" — anything without an engineering role word |
+| Tech discriminator | Titles naming a primary stack not in your `skills` (Golang, Rust, Flutter, Rails, PHP, WordPress, …) |
+| Location compatibility | Single-country postings ("USA", "Brazil", "Germany") when `work_type` includes `"remote"` |
+| Skill score | Jobs where none of your skills or preferred roles appear in the title, tags, or first 500 chars of description |
+
+Multi-region locations ("Americas, Europe, Israel") pass through — they're broad enough to be worth reading.
 
 ## Configuration
 
@@ -113,17 +114,15 @@ All settings live in `.env` (copy from `.env.example`):
 
 | Variable | Default | Description |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | — | Required. Your Anthropic API key. |
-| `KEYWORD_FILTER_THRESHOLD` | `0.2` | Minimum keyword score (0–1) to pass pre-filter. Lower = more postings reach Claude. |
-| `LLM_MATCH_THRESHOLD` | `0.6` | Minimum Claude score to store a match. |
-| `DB_PATH` | `linked_whisper.db` | Path to the SQLite database file. |
+| `ANTHROPIC_API_KEY` | — | Required for `generate-schema` only. |
+| `KEYWORD_FILTER_THRESHOLD` | `0.2` | Minimum skill score to pass the filter. Lower = more results. |
 
 ## Job board connectors
 
-| Source | What it covers |
+| Source | API filtering used |
 |---|---|
-| RemoteOK | Engineering, design, marketing remote roles |
-| Himalayas | Curated fully-remote positions |
-| Remotive | Remote tech jobs with salary data |
-| Working Nomads | Location-flexible roles across categories |
-| Jobicy | Remote-first companies |
+| RemoteOK | Fetches all, slices to limit |
+| Himalayas | `?q=<top skills>&limit=N` |
+| Remotive | `?category=software-dev&search=<top skills>&limit=N` |
+| Working Nomads | Post-fetch dev-category filter |
+| Jobicy | `?tag=<primary skill>&count=N` |
