@@ -2,6 +2,49 @@
 
 AI-powered remote job matcher. You give it your resume; it searches multiple job boards, filters by keywords, and uses Claude to score each posting against your profile — keeping only the jobs worth reading.
 
+## Pipeline
+
+```mermaid
+flowchart TD
+    profile([profile.json])
+
+    profile --> fetch
+
+    subgraph fetch["Phase 1 · Fetch"]
+        direction LR
+        remoteok[RemoteOK]
+        himalayas[Himalayas]
+        remotive[Remotive]
+        nomads[Working Nomads]
+        jobicy[Jobicy]
+    end
+
+    fetch -->|"~50–200 raw jobs"| kw
+
+    subgraph kw["Phase 2 · Keyword Filter"]
+        kw_check{"score ≥ threshold?\n(default 0.2)"}
+    end
+
+    kw_check -->|"no (~70%)"| drop1[" discarded "]
+    kw_check -->|"yes (~30%)"| dedup
+
+    subgraph dedup["Phase 3 · LLM Scoring"]
+        seen{"in\njob_evaluations?"}
+        seen -->|yes| drop2[" skip\n(no API call) "]
+        seen -->|no| haiku["Claude Haiku\nscore 0–1 + reason"]
+        haiku --> ev[("save_evaluation\njob_evaluations")]
+        ev --> threshold{"score ≥ 0.6?"}
+        threshold -->|no| drop3[" discarded "]
+        threshold -->|yes| save
+    end
+
+    save[("save_match\njob_matches")]
+
+    save --> out
+
+    out(["linked-whisper list-matches\nsorted by score"])
+```
+
 ## What it does
 
 1. **Generates your profile** from a plain-text resume using Claude. Extracts skills, preferred roles, salary floor, and keywords to exclude.
