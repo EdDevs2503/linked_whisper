@@ -50,6 +50,12 @@ URL: {job.url}
     )
 
     raw = message.content[0].text.strip()
+    # Strip markdown code fences if the model wraps its response
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip()
     try:
         parsed = json.loads(raw)
         return MatchResult(
@@ -57,5 +63,5 @@ URL: {job.url}
             score=float(parsed.get("score", 0.0)),
             reason=str(parsed.get("reason", "")),
         )
-    except (json.JSONDecodeError, KeyError):
-        return MatchResult(match=False, score=0.0, reason=f"Parse error: {raw[:100]}")
+    except (json.JSONDecodeError, KeyError) as e:
+        return MatchResult(match=False, score=0.0, reason=f"[parse error] {e}: {raw[:120]}")
