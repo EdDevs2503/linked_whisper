@@ -1,14 +1,15 @@
 from datetime import datetime
 import httpx
-from .base import BaseConnector
+from .base import BaseConnector, api_tags_from_profile
 from ..schemas.job import JobPosition
+from ..schemas.profile import ProfileSchema
 
 
 class RemoteOKConnector(BaseConnector):
     name = "remoteok"
     _url = "https://remoteok.com/api"
 
-    async def fetch_jobs(self) -> list[JobPosition]:
+    async def fetch_jobs(self, profile: ProfileSchema, limit: int = 100) -> list[JobPosition]:
         async with httpx.AsyncClient(headers={"User-Agent": "LinkedWhisper/1.0"}, timeout=30) as client:
             response = await client.get(self._url)
             response.raise_for_status()
@@ -37,4 +38,4 @@ class RemoteOKConnector(BaseConnector):
                 url=item.get("url", f"https://remoteok.com/remote-jobs/{item['id']}"),
                 posted_at=posted_at,
             ))
-        return jobs
+        return jobs[:limit]

@@ -1,16 +1,21 @@
 from datetime import datetime
 import httpx
-from .base import BaseConnector
+from .base import BaseConnector, api_tags_from_profile
 from ..schemas.job import JobPosition
+from ..schemas.profile import ProfileSchema
 
 
 class RemotiveConnector(BaseConnector):
     name = "remotive"
     _url = "https://remotive.com/api/remote-jobs"
 
-    async def fetch_jobs(self) -> list[JobPosition]:
+    async def fetch_jobs(self, profile: ProfileSchema, limit: int = 100) -> list[JobPosition]:
+        tags = api_tags_from_profile(profile)
+        params: dict = {"limit": limit, "category": "software-dev"}
+        if tags:
+            params["search"] = " ".join(tags[:3])
         async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(self._url, params={"limit": 100})
+            response = await client.get(self._url, params=params)
             response.raise_for_status()
             data = response.json()
 
