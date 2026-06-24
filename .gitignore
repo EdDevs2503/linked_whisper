@@ -49,3 +49,7 @@ htmlcov/
 *.db
 *.sqlite
 *.sqlite3
+
+# Profile / personal data
+profile.yaml
+profile.json
